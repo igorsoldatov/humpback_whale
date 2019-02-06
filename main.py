@@ -500,15 +500,22 @@ def read_cropped_image(p, augment, image=None):
         all_img = np.concatenate((img, delm, msk), axis=1)
         imsave('../DATA/humpback_whale_siamese_torch/train_samples/' + p.replace('.jpg', f'-{random.randint(100, 999)}.jpg'), all_img)
 
-    # Normalize to zero mean and unit variance
-    if channel == 1:
-        img = img.reshape(img_shape).astype(np.float32)
-        img -= np.mean(img, keepdims=True)
-        img /= np.std(img, keepdims=True) + epsilon
-    else:
+    norm_zero_one = True
+    if norm_zero_one:
+        # Normalize to [0, 1]
         for c in range(img.shape[2]):
-            img[:, :, c] -= np.mean(img[:, :, c], keepdims=True)
-            img[:, :, c] /= np.std(img[:, :, c], keepdims=True) + epsilon
+            img[:, :, c] -= img[:, :, c].min()
+            img[:, :, c] /= img[:, :, c].max()
+    else:
+        # Normalize to zero mean and unit variance
+        if channel == 1:
+            img = img.reshape(img_shape).astype(np.float32)
+            img -= np.mean(img, keepdims=True)
+            img /= np.std(img, keepdims=True) + epsilon
+        else:
+            for c in range(img.shape[2]):
+                img[:, :, c] -= np.mean(img[:, :, c], keepdims=True)
+                img[:, :, c] /= np.std(img[:, :, c], keepdims=True) + epsilon
     return img
 
 
