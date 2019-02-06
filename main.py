@@ -62,6 +62,8 @@ parser.add_argument('--path_test_mask', default='', type=str, help='')
 parser.add_argument('--checkpoint', default='', type=str, help='')
 parser.add_argument('--mode', default='classic', type=str, help='')
 parser.add_argument('--learn', default=1, type=int, help='')
+parser.add_argument('--random_score', default=0, type=int, help='')
+parser.add_argument('--ampl', default=1000.0, type=float, help='')
 
 
 args = parser.parse_args()
@@ -1186,14 +1188,15 @@ def main():
         for epoch in range(start_epoch, num_epochs):
             if first or (epoch - 1) % save_frequency == 0:
                 first = False
-                score_mat = compute_score(model, device, train_ids, batch_size)
-                # score_mat = np.random.random_sample(size=(len(train_ids), len(train_ids)))
-                # score_mat = np.load('./temp/score.npy')
-
-                valid_score = validation_score(score_mat, train_ids, train_ids)
-                print(f'Validation score on {epoch} epoch: {valid_score}')
-                score_valid_file = score_valid_dir + '{}-ep{:03}.npy'.format(args.name, epoch)
-                torch.save({'score_matrix': score_mat,
+                if args.random_score:
+                    score_mat = np.random.random_sample(size=(len(train_ids), len(train_ids)))
+                    # score_mat = np.load('./temp/score.npy')
+                else:
+                    score_mat = compute_score(model, device, train_ids, batch_size)
+                    valid_score = validation_score(score_mat, train_ids, train_ids)
+                    print(f'Validation score on {epoch} epoch: {valid_score}')
+                    score_valid_file = score_valid_dir + '{}-ep{:03}.pt'.format(args.name, epoch)
+                    torch.save({'score_matrix': score_mat,
                             'epoch': epoch,
                             "model_name": args.name,
                             'model_state': model.state_dict(),
