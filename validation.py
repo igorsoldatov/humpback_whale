@@ -93,7 +93,7 @@ def validation_score(score_matrix, ids1, ids2):
 
 
 def validation():
-    score_dir = '../DATA/humpback_whale_siamese_torch/scores_valid/exp384-ch3-t1/'
+    score_dir = '../DATA/humpback_whale_siamese_torch/scores_valid/exp768-ch3-t1/'
     files = listdir(score_dir)
     files.sort()
     for file in files:
