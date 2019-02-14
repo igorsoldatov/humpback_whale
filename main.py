@@ -1467,7 +1467,7 @@ def main():
                             'train_ids': train_ids,
                             'valid_score': valid_score}, score_valid_file)
 
-                score_mat = score_mat + 1000.0 * np.random.random_sample(size=score_mat.shape)
+                score_mat = score_mat + args.ampl * np.random.random_sample(size=score_mat.shape)
                 train_loader = torch.utils.data.DataLoader(
                     TrainingData(score_mat, w2ts, train_ids, t2i, steps=100, batch_size=batch_size,
                                  norm_zero_one=args.norm_zero_one), num_workers=6)
