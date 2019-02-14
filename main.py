@@ -36,16 +36,11 @@ from setting import mode
 from models import SiameseNetVer2, SiameseNet, SubBlock
 
 from albumentations import (
-    Rotate,
-    HorizontalFlip,
-    VerticalFlip,
-    Normalize,
-    Compose,
-    PadIfNeeded,
-    RandomCrop,
-    CenterCrop,
-    ElasticTransform,
-    RandomBrightnessContrast
+    HorizontalFlip, IAAPerspective, ShiftScaleRotate, CLAHE, RandomRotate90,
+    Transpose, ShiftScaleRotate, Blur, OpticalDistortion, GridDistortion, HueSaturationValue,
+    IAAAdditiveGaussianNoise, GaussNoise, MotionBlur, MedianBlur, IAAPiecewiseAffine,
+    IAASharpen, IAAEmboss, RandomBrightnessContrast, Flip, OneOf, Compose, Rotate, IAAAffine,
+    IAASuperpixels, RGBShift, ChannelShuffle, RandomGamma, ToGray, InvertImg, ElasticTransform
 )
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
@@ -53,17 +48,19 @@ parser.add_argument('--name', default='', type=str, help='')
 parser.add_argument('--gpu', default='0', type=str, help='')
 parser.add_argument('--epochs', default=1000, type=int, help='')
 parser.add_argument('--batch', default=50, type=int, help='')
-parser.add_argument('--img_size', default=1024, type=int, help='')
+parser.add_argument('--img_size', default=384, type=int, help='')
 parser.add_argument('--channel', default=3, type=int, help='')
-parser.add_argument('--path_train', default='', type=str, help='')
-parser.add_argument('--path_train_mask', default='', type=str, help='')
-parser.add_argument('--path_test', default='', type=str, help='')
-parser.add_argument('--path_test_mask', default='', type=str, help='')
+parser.add_argument('--path_train', default='../DATASET/humpback_whale/size768/train/', type=str, help='')
+parser.add_argument('--path_train_mask', default='../DATASET/humpback_whale/size768/train_mask/', type=str, help='')
+parser.add_argument('--path_test', default='../DATASET/humpback_whale/size768/test/', type=str, help='')
+parser.add_argument('--path_test_mask', default='../DATASET/humpback_whale/size768/test_mask/', type=str, help='')
 parser.add_argument('--checkpoint', default='', type=str, help='')
 parser.add_argument('--mode', default='classic', type=str, help='')
 parser.add_argument('--learn', default=1, type=int, help='')
 parser.add_argument('--random_score', default=0, type=int, help='')
 parser.add_argument('--ampl', default=1000.0, type=float, help='')
+parser.add_argument('--norm_zero_one', default=False, type=bool, help='')
+parser.add_argument('--model_mode', default='train', type=str, help='')
 
 
 args = parser.parse_args()
@@ -129,11 +126,39 @@ def get_image_sizes():
 p2size = get_image_sizes()
 
 
-def strong_aug(p=1.0):
+def strong_aug(p=0.9):
     return Compose([
-        RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=1.0),
-        Rotate((-30, 30), p=1.0, border_mode=cv2.BORDER_CONSTANT)
-        # ElasticTransform(alpha=600, sigma=25,  alpha_affine=0, border_mode=cv2.BORDER_CONSTANT, p=1.0)
+        OneOf([
+            IAAAdditiveGaussianNoise(scale=(0.01 * 255, 0.05 * 255), p=1.0),
+            GaussNoise(var_limit=(20, 120), p=1.0),
+            RandomGamma(gamma_limit=(80, 120), p=1.0),
+        ], p=0.9),
+        RandomBrightnessContrast(p=1.0),
+        OneOf([
+            # MotionBlur(p=1.0),
+            # MedianBlur(blur_limit=3, p=1.0),
+            Blur(blur_limit=5, p=1.0),
+            IAASharpen(p=1.0),
+            # IAAEmboss(p=1.0),
+            # IAASuperpixels(n_segments=10, p_replace=0.05, p=1.0),
+        ], p=0.9),
+        OneOf([
+            CLAHE(clip_limit=8, p=1.0),
+            RGBShift(p=1.0),
+            ChannelShuffle(p=1.0),
+            HueSaturationValue(p=1.0),
+            # ToGray(p=1.0),
+        ], p=0.9),
+        # OneOf([
+        #     OpticalDistortion(border_mode=cv2.BORDER_CONSTANT, p=1.0),
+        #     # GridDistortion(border_mode=cv2.BORDER_CONSTANT, p=1.0),
+        #     IAAPiecewiseAffine(nb_rows=4, nb_cols=4, p=1.0),
+        #     IAAPerspective(scale=(0.05, 0.075), p=1.0),
+        #     # IAAAffine(mode='constant', p=1.0),
+        #     ElasticTransform(alpha=alpha, sigma=sigma, alpha_affine=alpha_affine,
+        #                      border_mode=cv2.BORDER_CONSTANT,
+        #                      p=1.0),
+        # ], p=0.9),
     ], p=p)
 
 
@@ -386,7 +411,7 @@ def read_raw_image(p):
     return img
 
 
-def read_cropped_image(p, augment, image=None):
+def read_cropped_image(p, augment, image=None, norm_zero_one=False):
     """
     @param p : the name of the picture to read
     @param augment: True/False if data augmentation should be performed
@@ -465,6 +490,9 @@ def read_cropped_image(p, augment, image=None):
     elif mode == 'classic':
         img = affine_transform(img, matrix, offset, output_shape=output_shape, order=1, mode='constant',
                                cval=np.average(img))
+        data = {"image": img}
+        augmented = strong_aug()(**data)
+        img = augmented['image']
     else:
         msk = imread(TRAIN_MASK + p.replace('jpg', 'png'))
 
@@ -500,7 +528,6 @@ def read_cropped_image(p, augment, image=None):
         all_img = np.concatenate((img, delm, msk), axis=1)
         imsave('../DATA/humpback_whale_siamese_torch/train_samples/' + p.replace('.jpg', f'-{random.randint(100, 999)}.jpg'), all_img)
 
-    norm_zero_one = True
     if norm_zero_one:
         # Normalize to [0, 1]
         for c in range(img.shape[2]):
@@ -560,18 +587,18 @@ def read_for_training_tmp(p, augmentation=False):
     # return read_cropped_image(p, True)
 
 
-def read_for_training(p):
+def read_for_training(p, norm_zero_one=False):
     """
     Read and preprocess an image with data augmentation (random transform).
     """
-    return read_cropped_image(p, True)
+    return read_cropped_image(p, True, norm_zero_one=norm_zero_one)
 
 
-def read_for_validation(p):
+def read_for_validation(p, norm_zero_one=False):
     """
     Read and preprocess an image without data augmentation (use for testing).
     """
-    return read_cropped_image(p, False)
+    return read_cropped_image(p, False, norm_zero_one=norm_zero_one)
 
 
 def build_transform(rotation, shear, height_zoom, width_zoom, height_shift, width_shift):
@@ -590,7 +617,7 @@ def build_transform(rotation, shear, height_zoom, width_zoom, height_shift, widt
 
 
 class TrainingData(torch.utils.data.Dataset):
-    def __init__(self, score_, w2ts_, train_, t2i_, steps=1000, batch_size=32, mode='standart'):
+    def __init__(self, score_, w2ts_, train_, t2i_, steps=1000, batch_size=32, mode='standart', norm_zero_one=False):
         """
         @param score the cost matrix for the picture matching
         @param steps the number of epoch we are planning with this score matrix
@@ -603,6 +630,7 @@ class TrainingData(torch.utils.data.Dataset):
         self.train = train_
         self.t2i = t2i_
         self.mode = mode
+        self.norm_zero_one = norm_zero_one
         for ts in self.w2ts.values():
             idxs = [self.t2i[t] for t in ts]
             for i in idxs:
@@ -622,11 +650,11 @@ class TrainingData(torch.utils.data.Dataset):
         c = np.zeros((size, 1), dtype=np.float32)
         j = start // 2
         for i in range(0, size, 2):
-            a[i, :, :, :] = read_for_training(self.match[j][0])
-            b[i, :, :, :] = read_for_training(self.match[j][1])
+            a[i, :, :, :] = read_for_training(self.match[j][0], self.norm_zero_one)
+            b[i, :, :, :] = read_for_training(self.match[j][1], self.norm_zero_one)
             c[i, 0] = 1  # This is a match
-            a[i + 1, :, :, :] = read_for_training(self.unmatch[j][0])
-            b[i + 1, :, :, :] = read_for_training(self.unmatch[j][1])
+            a[i + 1, :, :, :] = read_for_training(self.unmatch[j][0], self.norm_zero_one)
+            b[i + 1, :, :, :] = read_for_training(self.unmatch[j][1], self.norm_zero_one)
             c[i + 1, 0] = 0  # Different whales
             j += 1
         a = np.rollaxis(a, 3, 1)
@@ -680,11 +708,12 @@ class TrainingData(torch.utils.data.Dataset):
 
 class FeatureGen(torch.utils.data.Dataset):
     # A Keras generator to evaluate only the BRANCH MODEL
-    def __init__(self, data, batch_size=64, verbose=1):
+    def __init__(self, data, batch_size=64, verbose=1, norm_zero_one=False):
         super(FeatureGen, self).__init__()
         self.data = data
         self.batch_size = batch_size
         self.verbose = verbose
+        self.norm_zero_one = norm_zero_one
         if self.verbose > 0:
             self.progress = tqdm(total=len(self), desc='Features')
 
@@ -693,7 +722,7 @@ class FeatureGen(torch.utils.data.Dataset):
         size = min(len(self.data) - start, self.batch_size)
         a = np.zeros((size,) + img_shape, dtype=np.float32)
         for i in range(size):
-            a[i, :, :, :] = read_for_validation(self.data[start + i])
+            a[i, :, :, :] = read_for_validation(self.data[start + i], self.norm_zero_one)
         if self.verbose > 0:
             self.progress.update()
             if self.progress.n >= len(self):
@@ -950,7 +979,10 @@ def train(model, device, train_loader, epoch, optimizer, start):
     print('\n', end='', flush=True)
 
 
-def predict(model, device, batch_size, file_out, score_file=''):
+### PREDICTION ###
+
+
+def predict(model, device, batch_size, file_out, score_file='', norm_zero_one=False):
     # Find elements from training sets not 'new_whale'
     tic = time.time()
     h2ws = {}
@@ -967,8 +999,8 @@ def predict(model, device, batch_size, file_out, score_file=''):
     for i, h in enumerate(known):
         h2i[h] = i
 
-    feature_loader_known = torch.utils.data.DataLoader(FeatureGen(known, batch_size, 0), num_workers=10)
-    feature_loader_submit = torch.utils.data.DataLoader(FeatureGen(submit, batch_size, 0), num_workers=10)
+    feature_loader_known = torch.utils.data.DataLoader(FeatureGen(known, batch_size, 0, norm_zero_one=norm_zero_one), num_workers=10)
+    feature_loader_submit = torch.utils.data.DataLoader(FeatureGen(submit, batch_size, 0, norm_zero_one=norm_zero_one), num_workers=10)
 
     feature_known = np.zeros((len(known), features_size))
     feature_submit = np.zeros((len(submit), features_size))
@@ -993,7 +1025,7 @@ def predict(model, device, batch_size, file_out, score_file=''):
             end = start + batch_size
             feature_submit[start:end] = output.cpu().data.numpy()
 
-        batch_size = 1024 * 48
+        batch_size = 1024 * 4
         score_gen = torch.utils.data.DataLoader(ScoreGen(feature_known, feature_submit, batch_size=batch_size, verbose=0), num_workers=6)
         for batch_idx, data in tqdm(enumerate(score_gen), total=len(score_gen), desc='Score'):
             for i in range(len(data)):
@@ -1004,19 +1036,158 @@ def predict(model, device, batch_size, file_out, score_file=''):
             end = start + batch_size
             score[start:end] = output.cpu().data.numpy()
 
+    threshold = 0.99
+
     score = score_reshape(score, feature_known, feature_submit)
     if score_file != '':
-        np.save(score_file, score)
+        torch.save({'score_matrix': score, 'known': known, 'submit': submit, 'threshold': threshold}, score_file)
 
     # Generate the subsmission file.
-    prepare_submission(0.99, file_out, score, known, h2ws)
+    prepare_submission(threshold, file_out, score, known, h2ws)
     toc = time.time()
     print("Submission time: ", (toc - tic) / 60.)
 
     return score
 
 
-def validate(model, device, batch_size, name):
+def prediction():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    list_dirs = [args.name]
+
+    for checkpoint_dir in list_dirs:
+        mypath = f'../DATA/humpback_whale_siamese_torch/checkpoints/{checkpoint_dir}/'
+        files = [f for f in listdir(mypath) if isfile(join(mypath, f))]
+        files.sort()
+
+        submit_dir = f'../DATA/humpback_whale_siamese_torch/submissions/{checkpoint_dir}/'
+        score_dir = f'../DATA/humpback_whale_siamese_torch/scores/{checkpoint_dir}/'
+        os.makedirs(submit_dir, exist_ok=True)
+        os.makedirs(score_dir, exist_ok=True)
+
+        for n, file in enumerate(files):
+            sub_file = join(submit_dir, file.replace('.pt', '.csv'))
+            score_file = join(score_dir, file)
+            if isfile(score_file):
+                continue
+            print(file)
+
+            checkpoint = torch.load(mypath + file)
+            model = SiameseNet(checkpoint['channel'], checkpoint['features_size'])
+            model.load_state_dict(checkpoint['state_dict'])
+            model.to(device)
+            predict(model, device, args.batch, sub_file, score_file, checkpoint['norm_zero_one'])
+
+
+def make_submission_from_score(threshold=0.94):
+    h2ws, w2hs, train_ids, w2ts, t2i, train_set = get_prepared_data()
+
+    checkpoint = torch.load('../DATA/humpback_whale_siamese_torch/scores/all-files101.pt')
+    score = checkpoint['score_matrix']
+    known = checkpoint['known']
+    # submit = checkpoint['submit']
+    file_out = f'../DATA/humpback_whale_siamese_torch/submissions/all-files101-th({threshold}).scv'
+    prepare_submission(threshold, file_out, score, known, h2ws)
+
+
+### VALIDATION ###
+
+
+def validation():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    list_dirs = [args.name]
+
+    for my_dir in list_dirs:
+        my_path = f'../DATA/humpback_whale_siamese_torch/checkpoints/{my_dir}/'
+        files = [f for f in listdir(my_path) if isfile(join(my_path, f))]
+        files.sort()
+
+        score_dir = f'../DATA/humpback_whale_siamese_torch/scores_valid/{my_dir}/'
+        os.makedirs(score_dir, exist_ok=True)
+
+        for n, file in enumerate(files):
+            score_file = join(score_dir, file)
+            if isfile(score_file):
+                continue
+            print(file)
+
+            checkpoint = torch.load(my_path + file)
+            model = SiameseNet(checkpoint['channel'], checkpoint['features_size'])
+            model.load_state_dict(checkpoint['state_dict'])
+            model.to(device)
+            validate(model, device, args.batch, score_file, checkpoint['norm_zero_one'])
+
+
+def validate(model, device, batch_size, file_out, norm_zero_one):
+    train_df = pd.read_csv(TRAIN_DF)
+
+    whale2image = {}
+    for image, wid in zip(train_df['Image'], train_df['Id']):
+        if wid not in whale2image:
+            whale2image[wid] = []
+        whale2image[wid].append(image)
+
+    known = []
+    for wid in whale2image:
+        if wid != 'new_whale' and len(whale2image[wid]) > 1:
+            known += whale2image[wid]
+
+    unknown = known + whale2image['new_whale']
+
+    known.sort()
+    unknown.sort()
+
+    feature_loader_known = torch.utils.data.DataLoader(
+        FeatureGen(known, batch_size, 0, norm_zero_one=norm_zero_one),
+        num_workers=10)
+    feature_loader_unknown = torch.utils.data.DataLoader(
+        FeatureGen(unknown, batch_size, 0, norm_zero_one=norm_zero_one),
+        num_workers=10)
+
+    feature_known = np.zeros((len(known), features_size))
+    feature_unknown = np.zeros((len(unknown), features_size))
+    score = np.zeros((len(known) * len(unknown), 1))
+
+    model.eval()
+    with torch.no_grad():
+
+        for batch_idx, data in tqdm(enumerate(feature_loader_known), total=len(feature_loader_known),
+                                    desc='Features known  '):
+            data = data[0].to(device)
+
+            output = model(data, mode='branch')
+            start = batch_idx * batch_size
+            end = start + batch_size
+            feature_known[start:end] = output.cpu().data.numpy()
+
+        for batch_idx, data in tqdm(enumerate(feature_loader_unknown), total=len(feature_loader_unknown),
+                                    desc='Features unknown'):
+            data = data[0].to(device)
+
+            output = model(data, mode='branch')
+            start = batch_idx * batch_size
+            end = start + batch_size
+            feature_unknown[start:end] = output.cpu().data.numpy()
+
+        batch_size = 1024 * 4
+        score_gen = torch.utils.data.DataLoader(
+            ScoreGen(feature_known, feature_unknown, batch_size=batch_size, verbose=0), num_workers=6)
+        for batch_idx, data in tqdm(enumerate(score_gen), total=len(score_gen), desc='Score'):
+            for i in range(len(data)):
+                data[i] = data[i][0].type(torch.FloatTensor).to(device)
+
+            output = model(data, mode='head')
+            start = batch_idx * batch_size
+            end = start + batch_size
+            score[start:end] = output.cpu().data.numpy()
+
+    score = score_reshape(score, feature_known, feature_unknown)
+
+    torch.save({'score_matrix': score, 'known': known, 'submit': unknown, 'threshold': 0}, file_out)
+
+
+def validate_splits(model, device, batch_size, name):
     train_df = pd.read_csv(TRAIN_DF)
 
     whale2image = {}
@@ -1102,145 +1273,8 @@ def validate(model, device, batch_size, name):
         torch.save({'score': score, 'known': known, 'predc': predc}, f'../DATA/humpback_whale_siamese_torch/scores_valid/{name}-split{s}.pt')
 
 
-def load_state_dict(src, dst, name='', save_path=''):
-    src_state = src.state_dict()
-    dst_state = dst.state_dict()
-    for key in src_state.keys():
-        if key in dst_state and src_state[key].shape == dst_state[key].shape:
-            dst_state[key] = src_state[key]
-        elif key == 'conv2d_1.weight':
-            for i in range(src_state[key].shape[0]):
-                for j in range(dst_state[key].shape[1]):
-                    dst_state[key][i, j, :, :] = src_state[key][i, 0, :, :]
-        else:
-            print(key)
-
-    for key in src_state.keys():
-        if key in dst_state:
-            print(f'{key} : {np.mean(src_state[key].cpu().data.numpy()) == np.mean(dst_state[key].cpu().data.numpy())}')
-        else:
-            print(f'{key} : {False}')
-
-    if save_path != '':
-        dst.load_state_dict(dst_state)
-        state = {"epoch": 0,
-                 "model_name": name,
-                 "state_dict": dst.state_dict(),
-                 "optimizer": {}}
-        torch.save(state, save_path)
-
-
-def main():
-    if False:
-        mydir = '../DATA/humpback_whale_siamese_torch/checkpoints/exp768-ch1-t1/'
-        mydir_out = '../DATA/humpback_whale_siamese_torch/checkpoints/exp768-ch1-t1-pt/'
-        files = listdir(mydir)
-        for file in files:
-            print(file)
-            model = torch.load(join(mydir, file))
-            epoch = int(file[8:11])
-            state = {"epoch": epoch,
-                     "model_name": 'exp384-ch1-t2',
-                     "state_dict": model.state_dict(),
-                     "optimizer": {}}
-            file_name = f'exp384-ch1-t2-ep{str(epoch).zfill(3)}.pt'
-            torch.save(state, join(mydir_out, file_name))
-
-    do_learn = args.learn
-    save_frequency = 5
-
-    checkpoint_dir = DATA + f'./checkpoints/{args.name}/'
-    submission_dir = DATA + f'./submissions/{args.name}/'
-    score_dir = DATA + f'./scores/{args.name}/'
-    score_valid_dir = DATA + f'./scores_valid/{args.name}/'
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    os.makedirs(submission_dir, exist_ok=True)
-    os.makedirs(score_dir, exist_ok=True)
-    os.makedirs(score_valid_dir, exist_ok=True)
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    optimizer_state = None
-
-    if args.checkpoint == '':
-        model = SiameseNet(channel, features_size)
-        start_epoch = 0
-    else:
-        # src = torch.load(args.checkpoint)
-        # model = SiameseNetVer2(channel, args.img_size)
-        # load_state_dict(src, model, name=args.name, save_path='../DATA/humpback_whale_siamese_torch/exp768-ch1-t2-init.tar')
-        # model = SiameseNetVer2(channel, args.img_size)
-        model = SiameseNet(channel, features_size)
-        state = torch.load(args.checkpoint)
-        model.load_state_dict(state['state_dict'])
-        start_epoch = state['epoch'] + 1
-        if len(state['optimizer']) != 0:
-            optimizer_state = state['optimizer']
-
-    model.to(device)
-
-    weight_decay = 0.0001
-    batch_size = batch
-    start = timer()
-
-    if do_learn:  # training mode
-        optimizer = optim.Adam(model.parameters(), lr=64e-5, weight_decay=weight_decay)
-        if optimizer_state is not None:
-            optimizer.load_state_dict(optimizer_state)
-
-        h2ws, w2hs, train_ids, w2ts, t2i, train_set = get_prepared_data()
-
-        first = True
-
-        for epoch in range(start_epoch, num_epochs):
-            if first or (epoch - 1) % save_frequency == 0:
-                first = False
-                if args.random_score:
-                    score_mat = np.random.random_sample(size=(len(train_ids), len(train_ids)))
-                    # score_mat = np.load('./temp/score.npy')
-                else:
-                    score_mat = compute_score(model, device, train_ids, batch_size)
-                    valid_score = validation_score(score_mat, train_ids, train_ids)
-                    print(f'Validation score on {epoch} epoch: {valid_score}')
-                    score_valid_file = score_valid_dir + '{}-ep{:03}.pt'.format(args.name, epoch)
-                    torch.save({'score_matrix': score_mat,
-                            'epoch': epoch,
-                            "model_name": args.name,
-                            'model_state': model.state_dict(),
-                            'optimizer': optimizer.state_dict(),
-                            'train_ids': train_ids,
-                            'valid_score': valid_score}, score_valid_file)
-
-                score_mat = score_mat + 1000.0 * np.random.random_sample(size=score_mat.shape)
-                train_loader = torch.utils.data.DataLoader(
-                    TrainingData(score_mat, w2ts, train_ids, t2i, steps=100, batch_size=batch_size), num_workers=6)
-
-            train(model, device, train_loader, epoch, optimizer, start)
-            # test(model, device, test_loader)
-            
-            if epoch % save_frequency == 0:
-                state_file = checkpoint_dir + '{}-ep{:03}.model'.format(args.name, epoch)
-                submt_file = submission_dir + '{}-ep{:03}.csv'.format(args.name, epoch)
-                score_file = score_dir + '{}-ep{:03}.pt'.format(args.name, epoch)
-
-                state = {"epoch": epoch,
-                         "model_name": args.name,
-                         "state_dict": model.state_dict(),
-                         "optimizer": optimizer.state_dict()}
-                torch.save(state, state_file)
-                # predict(model, device, batch_size, submt_file, score_file)
-
-    else:  # prediction
-        print('Start predicting...')
-        predict(model, device, batch_size, submission_dir + '{}-ep{:03}.csv'.format(args.name, num_epochs))
-        # print('Start validation...')
-        # checkpoint_split = args.checkpoint.split('/')
-        # valid_name = checkpoint_split[len(checkpoint_split) - 1].replace('.model', '')
-        # validate(model, device, batch_size, valid_name)
-
-
 def validation_score(score_matrix, ids1, ids2):
-    threshold = 0.99
+    threshold = 1.0
 
     train_df = pd.read_csv(TRAIN_DF)
     image2whale = {}
@@ -1321,8 +1355,163 @@ def calculate_valid_score():
         print(f'{file} : {valid_score}')
 
 
+###
+
+
+def load_state_dict(src, dst, name='', save_path=''):
+    src_state = src.state_dict()
+    dst_state = dst.state_dict()
+    for key in src_state.keys():
+        if key in dst_state and src_state[key].shape == dst_state[key].shape:
+            dst_state[key] = src_state[key]
+        elif key == 'conv2d_1.weight':
+            for i in range(src_state[key].shape[0]):
+                for j in range(dst_state[key].shape[1]):
+                    dst_state[key][i, j, :, :] = src_state[key][i, 0, :, :]
+        else:
+            print(key)
+
+    for key in src_state.keys():
+        if key in dst_state:
+            print(f'{key} : {np.mean(src_state[key].cpu().data.numpy()) == np.mean(dst_state[key].cpu().data.numpy())}')
+        else:
+            print(f'{key} : {False}')
+
+    if save_path != '':
+        dst.load_state_dict(dst_state)
+        state = {"epoch": 0,
+                 "model_name": name,
+                 "state_dict": dst.state_dict(),
+                 "optimizer": {}}
+        torch.save(state, save_path)
+
+
+def main():
+    if False:
+        mydir = '../DATA/humpback_whale_siamese_torch/checkpoints/exp768-ch1-t1/'
+        mydir_out = '../DATA/humpback_whale_siamese_torch/checkpoints/exp768-ch1-t1-pt/'
+        files = listdir(mydir)
+        for file in files:
+            print(file)
+            model = torch.load(join(mydir, file))
+            epoch = int(file[8:11])
+            state = {"epoch": epoch,
+                     "model_name": 'exp384-ch1-t2',
+                     "state_dict": model.state_dict(),
+                     "optimizer": {}}
+            file_name = f'exp384-ch1-t2-ep{str(epoch).zfill(3)}.pt'
+            torch.save(state, join(mydir_out, file_name))
+
+    do_learn = args.learn
+    save_frequency = 5
+
+    checkpoint_dir = DATA + f'./checkpoints/{args.name}/'
+    submission_dir = DATA + f'./submissions/{args.name}/'
+    score_dir = DATA + f'./scores/{args.name}/'
+    score_valid_dir = DATA + f'./scores_valid/{args.name}/'
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    os.makedirs(submission_dir, exist_ok=True)
+    os.makedirs(score_dir, exist_ok=True)
+    os.makedirs(score_valid_dir, exist_ok=True)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    optimizer_state = None
+
+    if args.checkpoint == '':
+        model = SiameseNet(channel, features_size)
+        start_epoch = 0
+    else:
+        # src = torch.load(args.checkpoint)
+        # model = SiameseNetVer2(channel, args.img_size)
+        # load_state_dict(src, model, name=args.name, save_path='../DATA/humpback_whale_siamese_torch/exp768-ch1-t2-init.tar')
+        # model = SiameseNetVer2(channel, args.img_size)
+        state = torch.load(args.checkpoint)
+        model = SiameseNet(state['channel'], state['features_size'])
+        model.load_state_dict(state['state_dict'])
+        start_epoch = state['epoch'] + 1
+        if len(state['optimizer']) != 0:
+            optimizer_state = state['optimizer']
+
+    model.to(device)
+
+    weight_decay = 0.0001
+    batch_size = batch
+    start = timer()
+
+    if do_learn:  # training mode
+        optimizer = optim.Adam(model.parameters(), lr=64e-5, weight_decay=weight_decay)
+        if optimizer_state is not None:
+            optimizer.load_state_dict(optimizer_state)
+
+        h2ws, w2hs, train_ids, w2ts, t2i, train_set = get_prepared_data()
+
+        first = True
+
+        for epoch in range(start_epoch, num_epochs):
+            if first or (epoch - 1) % save_frequency == 0:
+                first = False
+                if args.random_score:
+                    score_mat = np.random.random_sample(size=(len(train_ids), len(train_ids)))
+                    # score_mat = np.load('./temp/score.npy')
+                else:
+                    score_mat = compute_score(model, device, train_ids, batch_size)
+                    valid_score = validation_score(score_mat, train_ids, train_ids)
+                    print(f'Validation score on {epoch} epoch: {valid_score}')
+                    score_valid_file = score_valid_dir + '{}-ep{:03}.pt'.format(args.name, epoch)
+                    torch.save({'score_matrix': score_mat,
+                            'epoch': epoch,
+                            "model_name": args.name,
+                            'model_state': model.state_dict(),
+                            'optimizer': optimizer.state_dict(),
+                            'train_ids': train_ids,
+                            'valid_score': valid_score}, score_valid_file)
+
+                score_mat = score_mat + 1000.0 * np.random.random_sample(size=score_mat.shape)
+                train_loader = torch.utils.data.DataLoader(
+                    TrainingData(score_mat, w2ts, train_ids, t2i, steps=100, batch_size=batch_size,
+                                 norm_zero_one=args.norm_zero_one), num_workers=6)
+
+            train(model, device, train_loader, epoch, optimizer, start)
+            # test(model, device, test_loader)
+            
+            if epoch % save_frequency == 0:
+                state_file = checkpoint_dir + '{}-ep{:03}.pt'.format(args.name, epoch)
+                submt_file = submission_dir + '{}-ep{:03}.csv'.format(args.name, epoch)
+                score_file = score_dir + '{}-ep{:03}.pt'.format(args.name, epoch)
+
+                state = {"epoch": epoch,
+                         "model_name": args.name,
+                         "state_dict": model.state_dict(),
+                         "optimizer": optimizer.state_dict(),
+                         'channel': channel,
+                         'features_size': features_size,
+                         'image_size': img_size,
+                         'norm_zero_one': args.norm_zero_one}
+                torch.save(state, state_file)
+                # predict(model, device, batch_size, submt_file, score_file)
+
+    else:  # prediction
+        print('Start predicting...')
+        predict(model, device, batch_size, submission_dir + '{}-ep{:03}.csv'.format(args.name, num_epochs))
+        # print('Start validation...')
+        # checkpoint_split = args.checkpoint.split('/')
+        # valid_name = checkpoint_split[len(checkpoint_split) - 1].replace('.model', '')
+        # validate(model, device, batch_size, valid_name)
+
+
 if __name__ == "__main__":
-    # make_crop_samples()
-    # print_model_arch2()
-    # calculate_valid_score()
-    main()
+    if args.model_mode == 'train':
+        print('Stat training')
+        main()
+    elif args.model_mode == 'validate':
+        print('Stat validation')
+        validation()
+    elif args.model_mode == 'predict':
+        print('Stat prediction')
+        prediction()
+
+    # make_submission_from_score(0.93)
+    # make_submission_from_score(0.92)
+    # make_submission_from_score(0.91)
+    # make_submission_from_score(0.90)

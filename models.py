@@ -2,9 +2,7 @@ import torch
 import torch.nn as nn
 from collections import OrderedDict
 from torchvision.transforms import transforms
-
-features_size = 512
-branch_features = 512
+from pretrainedmodels import resnet18
 
 
 class SubBlock(nn.Module):
@@ -209,6 +207,75 @@ class SiameseNetVer2(nn.Module):
                     x = self.layer_5(x)
 
                 x = self.globmaxpool2d(x)  # 512
+                x = x.view((data[0].shape[0], self.features_size))
+                res.append(x)
+
+        if mode == 'branch':
+            return res[0]
+
+        ############
+        # HEAD MODEL
+        ############
+
+        x1 = transforms.Lambda(lambda x: x[0] * x[1])(res)
+        x2 = transforms.Lambda(lambda x: x[0] + x[1])(res)
+        x3 = transforms.Lambda(lambda x: torch.abs(x[0] - x[1]))(res)
+        x4 = transforms.Lambda(lambda x: torch.pow(x, 2))(x3)
+        x = torch.cat([x1, x2, x3, x4], dim=1)
+        x = x.view((res[0].shape[0], 1, 4, res[0].shape[1]))
+
+        # Per feature NN with shared weight is implemented using CONV2D with appropriate stride.
+        x = self.conv2d_head_1(x)
+        x = nn.ReLU()(x)
+        x = x.transpose(1, 2).transpose(2, 3)
+        x = self.conv2d_head_2(x)
+        x = x.view(x.size()[0], -1)
+
+        # Weighted sum implemented as a Dense layer.
+        x = self.fc_head(x)
+        x = nn.Sigmoid()(x)
+
+        return x
+
+
+class SiameseResNet18(nn.Module):
+    def __init__(self, features):
+        super(SiameseResNet18, self).__init__()
+        self.branch_features = features
+        self.branch = self._get_branch_net(channels=3, num_classes=5004)
+        self.conv2d_head_1 = nn.Conv2d(1, 32, (4, 1), stride=1)
+        self.conv2d_head_2 = nn.Conv2d(1, 1, (1, 32), stride=1)
+        self.fc_head = nn.Linear(self.branch_features, 1, bias=True)
+
+    def _get_branch_net(self, channels, num_classes):
+        model = resnet18(pretrained="imagenet")
+        model.global_pool = nn.AdaptiveAvgPool2d(1)
+        model.conv1_7x7_s2 = nn.Conv2d(channels, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3))
+        model.last_linear = nn.Sequential(
+            nn.BatchNorm1d(1024),
+            nn.Dropout(0.5),
+            nn.Linear(1024, num_classes),
+        )
+        # print('Model architecture:')
+        # print(model)
+        # total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        # print(f'\n\n\n\nModel trainable parameters {total_params}')
+        return model
+
+    def forward(self, data, mode='train'):
+        ##############
+        # BRANCH MODEL
+        ##############
+        if mode == 'branch':
+            data = [data]
+
+        res = []
+
+        if mode == 'head':
+            res = data
+        else:
+            for i in range(len(data)):
+                x = self.branch(data[i])
                 x = x.view((data[0].shape[0], self.features_size))
                 res.append(x)
 

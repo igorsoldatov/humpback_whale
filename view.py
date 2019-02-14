@@ -1,7 +1,9 @@
 import cv2
+import os
 import numpy as np
 import pandas as pd
 import json
+import torch
 from tqdm import tqdm
 from os import listdir
 from os.path import isfile, join
@@ -9,11 +11,15 @@ from scipy.misc import imread, imsave, imresize
 from shutil import copyfile
 from scipy import ndimage
 from skimage.morphology import label
+from imgaug import augmenters as iaa
+import imgaug as ia
+from timeit import default_timer as timer
 from albumentations import (
-    Rotate,
-    Compose,
-    ElasticTransform,
-    RandomBrightnessContrast,
+    HorizontalFlip, IAAPerspective, ShiftScaleRotate, CLAHE, RandomRotate90,
+    Transpose, ShiftScaleRotate, Blur, OpticalDistortion, GridDistortion, HueSaturationValue,
+    IAAAdditiveGaussianNoise, GaussNoise, MotionBlur, MedianBlur, IAAPiecewiseAffine,
+    IAASharpen, IAAEmboss, RandomBrightnessContrast, Flip, OneOf, Compose, Rotate, IAAAffine,
+    IAASuperpixels, RGBShift, ChannelShuffle, RandomGamma, ToGray, InvertImg, ElasticTransform
 )
 
 TRAIN_DF = '../DATASET/humpback_whale/all/train.csv'
@@ -290,16 +296,45 @@ def explore_prediction():
     hand_result_df = pd.read_csv('./hand_result.csv')
     hand_result = hand_result_df['test'].tolist()
     target_df = pd.read_csv(
-        '../DATA/humpback_whale_siamese_torch/submissions/ensembling/ensemble-size768+384-files84-first2.csv')
+        '../DATA/humpback_whale_siamese_torch/submissions/ensembling/'
+        'best-files183-first2-unique3517-score(0.99)-PL(0.895).csv')
     target = [idx.split(' ') for idx in target_df['Id']]
 
-    dir_name = 'exp768-ch1-t1'
-    mypath = f'../DATA/humpback_whale_siamese_torch/scores/{dir_name}/'
-    files = [f for f in listdir(mypath) if isfile(join(mypath, f))]
-    score = np.load(join(mypath, files[0]))
-    for i in range(1, len(files)):
-        score_path = join(mypath, files[i])
-        score += np.load(score_path)
+    score = None
+    known = None
+    submit = None
+
+    compile_scores = False
+    if compile_scores:
+        dirs = ['exp384-ch3-t1', 'exp384-ch3-t4', 'exp768-ch1-t1', 'exp768-ch3-t1']
+        files = []
+        for dir_name in dirs:
+            mypath = f'../DATA/humpback_whale_siamese_torch/scores/{dir_name}/'
+            files = files + [join(mypath, f) for f in listdir(mypath) if isfile(join(mypath, f))]
+
+        checkpoint = torch.load(files[0])
+        score = checkpoint['score_matrix']
+        known = checkpoint['known']
+        submit = checkpoint['submit']
+        for i in range(1, len(files)):
+            check_known = None
+            check_submit = None
+            if files[i].find('.npy') >= 0:
+                score += np.load(files[i])
+            else:
+                checkpoint = torch.load(files[i])
+                score += checkpoint['score_matrix']
+                check_known = (known == checkpoint['known'])
+                check_submit = (submit == checkpoint['submit'])
+            print(f'Loaded file: {files[i]}, known: {check_known}, submit: {check_submit}')
+
+        torch.save({'score_matrix': score / len(files), 'known': known, 'submit': submit, 'threshold': 0.99},
+                   f'../DATA/humpback_whale_siamese_torch/scores/all-files{len(files)}.pt')
+    else:
+        checkpoint = torch.load('../DATA/humpback_whale_siamese_torch/scores/all-files101.pt')
+        score = checkpoint['score_matrix']
+        known = checkpoint['known']
+        submit = checkpoint['submit']
 
     threshold = 0
     for th in range(1):
@@ -311,7 +346,7 @@ def explore_prediction():
         result_images = []
         result_scores = []
 
-        print(f'test : train : whale : count_examples : score')
+        print(f'test, train, whale, count_examples, position, score, confidence')
 
         for i, p in enumerate(submit):
             if p in hand_result:
@@ -355,32 +390,46 @@ def explore_prediction():
             draw_shadow_text(test_img, f'{i}/{len(submit)}', (5, 15), 0.5, (255, 255, 255), 1)
             draw_shadow_text(test_img, f'name: {p}', (5, 35), 0.5, (255, 255, 255), 1)
             n = 0
+            if scores[n] >= 0.99:
+                continue
+            if i < 4032:
+                continue
             while True:
                 image_name = images[n]
                 count_examples = len(w2i[t[n]])
-                whale_score = scores[n] / len(files)
+                whale_score = scores[n]
                 img = imread(expand_path(image_name))
                 draw_shadow_text(img, f'{n + 1}', (5, 15), 0.5, (255, 255, 255), 1)
                 draw_shadow_text(img, f'name: {image_name}', (5, 35), 0.5, (255, 255, 255), 1)
                 draw_shadow_text(img, f'whale: {t[n]} / {count_examples}', (5, 55), 0.5, (255, 255, 255), 1)
                 draw_shadow_text(img, f'score: {whale_score}', (5, 75), 0.5, (255, 255, 255), 1)
+                next_score = 0
+                if n + 1 < len(scores):
+                    next_score = scores[n + 1]
+                    draw_shadow_text(img, f'next score: {round(next_score, 2)}', (5, 95), 0.5, (255, 255, 255), 1)
 
                 plot_img = np.concatenate((test_img, img), axis=1)
                 cv2.imshow('prediction', plot_img)
                 key = cv2.waitKey(0) % 256
-                print(key)
-                if key == 83:
+                # print(key)
+                if key == 83:  # right
                     n += 1 if n < len(images) - 1 else -4
                     continue
-                elif key == 81:
+                elif key == 81:  # left
                     n -= 1 if n > 0 else -4
                     continue
-                elif key == 82:
+                elif key == 82:  # up
                     break
-                elif key == 84:
-                    print(f'{p} : {image_name} : {t[n]} : {count_examples} : {whale_score}')
-                elif key == 110:
-                    print(f'{p} : {image_name} : new_whale : {count_examples} : {whale_score}')
+                elif key == 104:  # h
+                    print(f'{p}, {image_name}, {t[n]}, {count_examples}, {n + 1}, {whale_score}, H, {next_score}')
+                elif key == 108:  # l
+                    print(f'{p}, {image_name}, {t[n]}, {count_examples}, {n + 1}, {whale_score}, L, {next_score}')
+                elif key == 99:  # c
+                    out_path = '../DATA/train_bb/'
+                    copyfile(expand_path(image_name), join(out_path, image_name))
+                elif key == 116:  # t
+                    out_path = '../DATA/test_bb/'
+                    copyfile(expand_path(p), join(out_path, p))
 
 
 def test_something():
@@ -410,9 +459,10 @@ def test_something():
 
 
 def work_with_bb():
+    count = 0
     TRAIN_PATH = '/home/igor/kaggle/DATASET/humpback_whale/all/train/'
-    old_bb = pd.read_csv('/home/igor/kaggle/DATA/humpback_whale_siamese_torch/metadata/bounding_boxes.csv')
-    new_bb = pd.read_csv('/home/igor/kaggle/DATA/humpback_whale_siamese_torch/metadata/bb_valid_err.csv')
+    old_bb = pd.read_csv('../DATA/humpback_whale_siamese_torch/metadata/bounding_boxes.csv')
+    new_bb = pd.read_csv('../DATA/0026.csv')
     bb = new_bb['filename'].tolist()
     list_x0 = []
     list_x1 = []
@@ -420,6 +470,10 @@ def work_with_bb():
     list_y1 = []
     for n, row in old_bb.iterrows():
         if row['Image'] in bb:
+
+            count += 1
+            print('{}'.format(row['Image']))
+
             new_row = new_bb[new_bb['filename'] == row['Image']]
             row_data = json.loads(new_row['region_shape_attributes'].values[0])
             x0 = row_data['x']
@@ -448,5 +502,190 @@ def work_with_bb():
     old_bb['x1'] = list_x1
     old_bb['y0'] = list_y0
     old_bb['y1'] = list_y1
-    old_bb.to_csv('/home/igor/kaggle/DATA/humpback_whale_siamese_torch/metadata/bounding_boxes_new.csv', header=True, index=False)
+    old_bb.to_csv('../DATA/humpback_whale_siamese_torch/metadata/bounding_boxes.csv', header=True, index=False)
+    print(f'Processed images: {count}')
 
+
+def draw_bb():
+    train_dir = '../DATASET/humpback_whale/all/train/'
+    my_dir = '../DATASET/humpback_whale/all/train/'
+    bb_df = pd.read_csv('../DATA/humpback_whale_siamese_torch/metadata/bounding_boxes.csv')
+    files = listdir(my_dir)
+    for n, r in tqdm(enumerate(bb_df.iterrows()), total=len(bb_df)):
+        # Image, x0, y0, x1, y1
+        dir_out = str(int(n / 1000)).zfill(4)
+        path_out = f'../DATA/train_bb/{dir_out}/'
+        os.makedirs(path_out, exist_ok=True)
+
+        row = r[1]
+        if row['Image'] in files:
+            img = imread(join(train_dir, row['Image']), mode='RGB')
+            cv2.rectangle(img, (row['x0'], row['y0']), (row['x1'], row['y1']), (255, 0, 0), 2)
+            imsave(join(path_out, row['Image']), img)
+
+
+def aug_test():
+    def get_bb_points(msk):
+        h, w = msk.shape
+        x0 = 0
+        x1 = msk.shape[1]
+        y0 = 0
+        y1 = msk.shape[0]
+        for i in range(w):
+            if msk[:, i].max() > 200:
+                x0 = i
+                break
+        for i in range(w):
+            if msk[:, msk.shape[1] - i - 1].max() > 200:
+                x1 = msk.shape[1] - i - 1
+                break
+        for i in range(h):
+            if msk[i, :].max() > 200:
+                y0 = i
+                break
+        for i in range(h):
+            if msk[msk.shape[0] - i - 1, :].max() > 200:
+                y1 = msk.shape[0] - i - 1
+                break
+        return (x0, y0), (x1, y1)
+
+    image_name = '7aea0b3e2.jpg'
+    p1, p2 = (12, 84), (391, 248)
+    img = imread(f'../DATA/aug_test/src/{image_name}')
+
+    h = 300
+    alpha, sigma, alpha_affine = h * 2, h * 0.08, h * 0.08
+
+    augs = {'1_IAAAdditiveGaussianNoise': IAAAdditiveGaussianNoise(scale=(0.01 * 255, 0.05 * 255), p=1.0),
+            '1_GaussNoise': GaussNoise(var_limit=(20, 120), p=1.0),
+            '1_RandomGamma': RandomGamma(gamma_limit=(80, 120), p=1.0),
+
+            '2_RandomBrightnessContrast': RandomBrightnessContrast(p=1.0),
+            '2_MotionBlur': MotionBlur(p=1.0),
+            '2_MedianBlur': MedianBlur(blur_limit=6, p=1.0),
+            '2_Blur': Blur(blur_limit=9, p=1.0),
+            '2_IAASharpen': IAASharpen(p=1.0),
+            '2_IAAEmboss': IAAEmboss(p=1.0),
+            '2_IAASuperpixels': IAASuperpixels(n_segments=50, p_replace=0.05, p=1.0),
+
+            '3_CLAHE': CLAHE(clip_limit=8, p=1.0),
+            '3_RGBShift': RGBShift(p=1.0),
+            '3_ChannelShuffle': ChannelShuffle(p=1.0),
+            '3_HueSaturationValue': HueSaturationValue(p=1.0),
+            '3_ToGray': ToGray(p=1.0),
+
+            '4_OpticalDistortion': OpticalDistortion(border_mode=cv2.BORDER_CONSTANT, p=1.0),
+            '4_GridDistortion': GridDistortion(border_mode=cv2.BORDER_CONSTANT, p=1.0),
+            '4_IAAPiecewiseAffine': IAAPiecewiseAffine(nb_rows=4, nb_cols=4, p=1.0),
+            '4_IAAPerspective': IAAPerspective(p=1.0),
+            '4_IAAAffine': IAAAffine(mode='constant', p=1.0),
+            '4_ElasticTransform': ElasticTransform(alpha=alpha, sigma=sigma, alpha_affine=alpha_affine, border_mode=cv2.BORDER_CONSTANT, p=1.0)}
+
+    # im_merge.shape[1] * 2, im_merge.shape[1] * 0.08, im_merge.shape[1] * 0.08
+
+    for aug in augs:
+        mask = np.zeros(img.shape[:2], dtype=np.uint8)
+        cv2.rectangle(mask, p1, p2, 255, 2)
+        data = {"image": img.copy(), 'mask': mask}
+        augmented = augs[aug](**data)
+        augimg = augmented['image']
+        draw_shadow_text(augimg, f'{aug}', (5, 15), 0.5, (255, 255, 255), 1)
+        ap1, ap2 = get_bb_points(augmented['mask'])
+        cv2.rectangle(augimg, ap1, ap2, (0, 255, 0), 2)
+        imsave(f'../DATA/aug_test/aug/{aug}-{image_name}', augimg)
+
+
+def test_time_aug():
+    h = 768
+    alpha, sigma, alpha_affine = h * 2, h * 0.08, h * 0.08
+
+    def strong_aug(p=0.9):
+        return Compose([
+            OneOf([
+                IAAAdditiveGaussianNoise(scale=(0.01 * 255, 0.05 * 255), p=1.0),
+                GaussNoise(var_limit=(20, 120), p=1.0),
+                RandomGamma(gamma_limit=(80, 120), p=1.0),
+            ], p=0.9),
+            RandomBrightnessContrast(p=1.0),
+            OneOf([
+                # MotionBlur(p=1.0),
+                # MedianBlur(blur_limit=3, p=1.0),
+                Blur(blur_limit=5, p=1.0),
+                IAASharpen(p=1.0),
+                # IAAEmboss(p=1.0),
+                # IAASuperpixels(n_segments=10, p_replace=0.05, p=1.0),
+            ], p=0.9),
+            OneOf([
+                CLAHE(clip_limit=8, p=1.0),
+                RGBShift(p=1.0),
+                ChannelShuffle(p=1.0),
+                HueSaturationValue(p=1.0),
+                # ToGray(p=1.0),
+            ], p=0.9),
+            # OneOf([
+            #     OpticalDistortion(border_mode=cv2.BORDER_CONSTANT, p=1.0),
+            #     # GridDistortion(border_mode=cv2.BORDER_CONSTANT, p=1.0),
+            #     IAAPiecewiseAffine(nb_rows=4, nb_cols=4, p=1.0),
+            #     IAAPerspective(scale=(0.05, 0.075), p=1.0),
+            #     # IAAAffine(mode='constant', p=1.0),
+            #     ElasticTransform(alpha=alpha, sigma=sigma, alpha_affine=alpha_affine,
+            #                      border_mode=cv2.BORDER_CONSTANT,
+            #                      p=1.0),
+            # ], p=0.9),
+        ], p=p)
+
+    def get_bb_points(msk):
+        h, w = msk.shape
+        x0 = 0
+        x1 = msk.shape[1]
+        y0 = 0
+        y1 = msk.shape[0]
+        for i in range(w):
+            if msk[:, i].max() > 200:
+                x0 = i
+                break
+        for i in range(w):
+            if msk[:, msk.shape[1] - i - 1].max() > 200:
+                x1 = msk.shape[1] - i - 1
+                break
+        for i in range(h):
+            if msk[i, :].max() > 200:
+                y0 = i
+                break
+        for i in range(h):
+            if msk[msk.shape[0] - i - 1, :].max() > 200:
+                y1 = msk.shape[0] - i - 1
+                break
+        return (x0, y0), (x1, y1)
+
+    my_aug = strong_aug()
+
+    bb_dict = {}
+    bb = pd.read_csv('../DATA/humpback_whale_siamese_torch/metadata/bounding_boxes.csv')
+    for name, x0, x1, y0, y1 in zip(bb['Image'], bb['x0'], bb['x1'], bb['y0'], bb['y1']):
+        bb_dict[name] = ((x0, y0), (x1, y1))
+
+    dir_out = '../DATA/aug_test/aug/'
+    dir_in = '../DATA/train_bb/0001/'
+    files = listdir(dir_in)
+    start = timer()
+    for file in tqdm(files, total=len(files)):
+        p1, p2 = bb_dict[file]
+        img = imread(join(dir_in, file), mode='RGB')
+        mask = np.zeros(img.shape[:2], dtype=np.uint8)
+        cv2.rectangle(mask, p1, p2, 255, 2)
+
+        data = {"image": img, 'mask': mask}
+        augmented = my_aug(**data)
+        img, mask = augmented['image'], augmented['mask']
+
+        ap1, ap2 = get_bb_points(mask)
+        cv2.rectangle(img, ap1, ap2, (0, 255, 0), 2)
+        imsave(join(dir_out, file), img)
+
+    print(f'Spend time: {timer() - start}')
+
+
+# draw_bb()
+test_time_aug()
+# explore_prediction()
