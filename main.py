@@ -124,11 +124,39 @@ def get_image_sizes():
 p2size = get_image_sizes()
 
 
-def strong_aug(p=1.0):
+def strong_aug(p=0.9):
     return Compose([
-        RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=1.0),
-        Rotate((-30, 30), p=1.0, border_mode=cv2.BORDER_CONSTANT)
-        # ElasticTransform(alpha=600, sigma=25,  alpha_affine=0, border_mode=cv2.BORDER_CONSTANT, p=1.0)
+        OneOf([
+            IAAAdditiveGaussianNoise(scale=(0.01 * 255, 0.05 * 255), p=1.0),
+            GaussNoise(var_limit=(20, 120), p=1.0),
+            RandomGamma(gamma_limit=(80, 120), p=1.0),
+        ], p=0.9),
+        RandomBrightnessContrast(p=1.0),
+        OneOf([
+            # MotionBlur(p=1.0),
+            # MedianBlur(blur_limit=3, p=1.0),
+            Blur(blur_limit=5, p=1.0),
+            IAASharpen(p=1.0),
+            # IAAEmboss(p=1.0),
+            # IAASuperpixels(n_segments=10, p_replace=0.05, p=1.0),
+        ], p=0.9),
+        OneOf([
+            CLAHE(clip_limit=8, p=1.0),
+            RGBShift(p=1.0),
+            ChannelShuffle(p=1.0),
+            HueSaturationValue(p=1.0),
+            # ToGray(p=1.0),
+        ], p=0.9),
+        # OneOf([
+        #     OpticalDistortion(border_mode=cv2.BORDER_CONSTANT, p=1.0),
+        #     # GridDistortion(border_mode=cv2.BORDER_CONSTANT, p=1.0),
+        #     IAAPiecewiseAffine(nb_rows=4, nb_cols=4, p=1.0),
+        #     IAAPerspective(scale=(0.05, 0.075), p=1.0),
+        #     # IAAAffine(mode='constant', p=1.0),
+        #     ElasticTransform(alpha=alpha, sigma=sigma, alpha_affine=alpha_affine,
+        #                      border_mode=cv2.BORDER_CONSTANT,
+        #                      p=1.0),
+        # ], p=0.9),
     ], p=p)
 
 
@@ -431,6 +459,10 @@ def read_cropped_image(p, augment, image=None):
     else:
         img = image
     if channel == 3:
+        if augment:
+            data = {"image": img}
+            augmented = strong_aug()(**data)
+            img = augmented['image']
         img = img.astype(np.float32)
         assert len(img.shape) == 3 and img.shape[2] == 3
 
